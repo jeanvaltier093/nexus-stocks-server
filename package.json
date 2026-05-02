@@ -1,0 +1,16 @@
+{
+  "name": "forex-nexus-stocks",
+  "version": "1.0.0",
+  "description": "NEXUS STOCKS — Serveur de signaux BUY sur 7 actions US (WR 65%)",
+  "main": "server-nexus.js",
+  "scripts": {
+    "start": "node server-nexus.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "node-fetch": "^2.7.0"
+  }
+}
