@@ -1,18 +1,21 @@
+
+Copier
+
 'use strict';
 const express = require('express');
 const fetch   = require('node-fetch');
 const app     = express();
-
+ 
 const TWELVE_KEY = process.env.TWELVE_DATA_API_KEY;
 const JBIN_KEY   = process.env.JBIN_KEY;
 const JBIN_ID    = process.env.JBIN_ID;
 const PORT       = process.env.PORT || 3002;
-
+ 
 if (!TWELVE_KEY || !JBIN_KEY || !JBIN_ID) {
   console.error('❌ Variables manquantes : TWELVE_DATA_API_KEY, JBIN_KEY, JBIN_ID');
   process.exit(1);
 }
-
+ 
 const STOCKS = [
   { symbol: 'AAPL',  name: 'Apple',     spread: 0.0005 },
   { symbol: 'MSFT',  name: 'Microsoft', spread: 0.0005 },
@@ -22,15 +25,15 @@ const STOCKS = [
   { symbol: 'GOOGL', name: 'Google',    spread: 0.0005 },
   { symbol: 'META',  name: 'Meta',      spread: 0.0006 },
 ];
-
+ 
 let activeTrades   = [];
 let history        = [];
 let lastSignalTime = {};
-
+ 
 const SL_PCT       = 0.02;
 const TP_PCT       = 0.03;
 const ANTI_CLUSTER = 24 * 60 * 60 * 1000;
-
+ 
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Content-Type');
@@ -39,7 +42,7 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json());
-
+ 
 // ─── JSONBIN ─────────────────────────────────────────────────────────────────
 async function syncCloud() {
   try {
@@ -65,7 +68,7 @@ async function loadCloud() {
     }
   } catch(e) { console.error('loadCloud:', e.message); }
 }
-
+ 
 // ─── MARCHÉ US ────────────────────────────────────────────────────────────────
 function getParisHour() {
   const now   = new Date();
@@ -90,7 +93,7 @@ function isMarketOpen() {
   if (hour === 15 && new Date().getUTCMinutes() < 30) return false;
   return true;
 }
-
+ 
 // ─── INDICATEURS ─────────────────────────────────────────────────────────────
 function calcEMA(arr, p) {
   if (arr.length < p) return arr.map(() => arr[arr.length - 1] || 0);
@@ -146,7 +149,7 @@ function calcPivot(highs, lows, closes, i) {
   const r1    = 2 * pivot - pL;
   return { pivot, r1 };
 }
-
+ 
 // ─── MOTEUR SIGNAUX ───────────────────────────────────────────────────────────
 function computeSignal(candles, stock) {
   if (candles.length < 60) return null;
@@ -192,7 +195,7 @@ function computeSignal(candles, stock) {
     engine:      'NEXUS'
   };
 }
-
+ 
 // ─── FETCH BOUGIES ────────────────────────────────────────────────────────────
 async function fetchCandles(symbol, outputsize = 300) {
   try {
@@ -207,82 +210,70 @@ async function fetchCandles(symbol, outputsize = 300) {
     return d.values.reverse().slice(0, -1);
   } catch(e) { console.error(`fetchCandles ${symbol}:`, e.message); return null; }
 }
-
-// ─── VÉRIFICATION TP/SL PAR HIGH/LOW DES BOUGIES ─────────────────────────────
-// Pour chaque trade actif, on récupère les bougies 4h depuis la date d'entrée
-// et on vérifie si le high ou le low de chaque bougie a touché le TP ou SL
+ 
+// ─── FETCH BOUGIES 30MIN ─────────────────────────────────────────────────────
+async function fetchCandles30(symbol) {
+  try {
+    const r = await fetch(
+      `https://api.twelvedata.com/time_series?symbol=${symbol}&interval=30min&outputsize=300&apikey=${TWELVE_KEY}`
+    );
+    const d = await r.json();
+    if (!d.values || d.status === 'error') return null;
+    return d.values.reverse().slice(0, -1);
+  } catch (e) { console.error(`fetchCandles30 ${symbol}:`, e.message); return null; }
+}
+ 
+// ─── VÉRIFICATION TP/SL — BOUGIES 30MIN (filtre strict post-entrée) ──────────
 async function checkTrades() {
   if (!activeTrades.length) return;
   let changed = false;
-
+ 
   for (const trade of [...activeTrades]) {
     try {
-      const tp        = parseFloat(trade.tp);
-      const sl        = parseFloat(trade.sl);
-      const en        = parseFloat(trade.entryPrice);
-      const entryDate = new Date(trade.addedAt || trade.timestamp);
-
-      // Récupérer les bougies 4h récentes
-      const candles = await fetchCandles(trade.symbol, 200);
+      const tp = parseFloat(trade.tp);
+      const sl = parseFloat(trade.sl);
+      const en = parseFloat(trade.entryPrice);
+ 
+      const entryTs = new Date(trade.addedAt || trade.timestamp).getTime();
+      if (isNaN(entryTs)) { console.log(`⚠️  ${trade.symbol} — date invalide`); continue; }
+ 
+      const candles = await fetchCandles30(trade.symbol);
       await sleep(2500);
-
-      if (!candles || !candles.length) {
-        console.log(`⚠️  ${trade.symbol} — bougies indisponibles`);
+      if (!candles || !candles.length) { console.log(`⚠️  ${trade.symbol} — bougies 30min indisponibles`); continue; }
+ 
+      const postEntry = candles.filter(c => new Date(c.datetime).getTime() > entryTs);
+ 
+      if (!postEntry.length) {
+        console.log(`⏸  ${trade.symbol} — en attente bougie 30min post-entrée`);
         continue;
       }
-
-      // Filtrer les bougies après la date d'entrée du trade
-      const candlesAfterEntry = candles.filter(c => new Date(c.datetime) >= entryDate);
-
-      if (!candlesAfterEntry.length) {
-        console.log(`⏸  ${trade.symbol} — aucune bougie après l'entrée`);
-        continue;
-      }
-
+ 
       let closed = false, result = null, closePrice = null, closeDate = null;
-
-      // Parcourir chaque bougie et vérifier high/low
-      for (const candle of candlesAfterEntry) {
+ 
+      for (const candle of postEntry) {
         const high = parseFloat(candle.high);
         const low  = parseFloat(candle.low);
-
-        // NEXUS STOCKS ne trade que BUY
-        if (high >= tp) {
-          closed = true; result = 'WIN'; closePrice = tp;
-          closeDate = candle.datetime; break;
-        }
-        if (low <= sl) {
-          closed = true; result = 'LOSS'; closePrice = sl;
-          closeDate = candle.datetime; break;
-        }
+        if (high >= tp) { closed=true; result='WIN';  closePrice=tp; closeDate=candle.datetime; break; }
+        if (low  <= sl) { closed=true; result='LOSS'; closePrice=sl; closeDate=candle.datetime; break; }
       }
-
+ 
       if (closed) {
         const pct = ((closePrice - en) / en * 100).toFixed(2);
-        console.log(`${result === 'WIN' ? '✅' : '❌'} ${trade.symbol} — ${result} — ${pct}% | bougie: ${closeDate}`);
-        history.unshift({
-          ...trade,
-          result,
-          closePrice: closePrice.toFixed(2),
-          pct,
-          closedAt: closeDate ? new Date(closeDate).toISOString() : new Date().toISOString()
-        });
+        console.log(`${result==='WIN'?'✅':'❌'} ${trade.symbol} — ${result} — ${pct}% | 30min: ${closeDate}`);
+        history.unshift({ ...trade, result, closePrice: closePrice.toFixed(2), pct, closedAt: new Date(closeDate).toISOString() });
         if (history.length > 100) history = history.slice(0, 100);
         activeTrades = activeTrades.filter(t => t.symbol !== trade.symbol);
         changed = true;
       } else {
-        const last   = candlesAfterEntry[candlesAfterEntry.length - 1];
-        const cur    = parseFloat(last.close);
-        const distTP = ((tp - cur) / cur * 100).toFixed(2);
-        const distSL = ((cur - sl) / cur * 100).toFixed(2);
-        console.log(`⏸  ${trade.symbol} @ ${cur} | TP à +${distTP}% | SL à -${distSL}% | ${candlesAfterEntry.length} bougies vérifiées`);
+        const last = postEntry[postEntry.length - 1];
+        console.log(`⏸  ${trade.symbol} @ ${last.close} | TP +${((tp-last.close)/last.close*100).toFixed(2)}% | SL -${((last.close-sl)/last.close*100).toFixed(2)}% | ${postEntry.length} bougies 30min`);
       }
-
-    } catch(e) { console.error(`checkTrades ${trade.symbol}:`, e.message); }
+ 
+    } catch (e) { console.error(`checkTrades ${trade.symbol}:`, e.message); }
   }
   if (changed) await syncCloud();
 }
-
+ 
 // ─── SCAN PRINCIPAL ───────────────────────────────────────────────────────────
 async function runScan() {
   console.log(`\n📡 SCAN NEXUS — ${new Date().toLocaleString('fr-FR')}`);
@@ -291,12 +282,12 @@ async function runScan() {
     await checkTrades();
     return;
   }
-
+ 
   await loadCloud();
   const now       = Date.now();
   const activeSym = activeTrades.map(t => t.symbol);
   let signalsFound = 0, changed = false;
-
+ 
   for (const stock of STOCKS) {
     if (activeSym.includes(stock.symbol)) {
       console.log(`⏸  ${stock.symbol} — trade actif`); continue;
@@ -320,12 +311,12 @@ async function runScan() {
       }
     } catch(e) { console.error(`scan ${stock.symbol}:`, e.message); }
   }
-
+ 
   console.log(`✅ Scan terminé — ${signalsFound} signal(s) trouvé(s)`);
   await checkTrades();
   if (changed) await syncCloud();
 }
-
+ 
 // ─── SCHEDULING ───────────────────────────────────────────────────────────────
 function getNextInterval() {
   const { hour, day } = getParisHour();
@@ -339,7 +330,7 @@ async function scheduleNext() {
   console.log(`⏱  Prochain scan dans ${Math.round(interval / 60000)} min`);
   setTimeout(async () => { await runScan(); scheduleNext(); }, interval);
 }
-
+ 
 // ─── HTTP ─────────────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({
@@ -389,7 +380,7 @@ app.post('/close', async (req, res) => {
   console.log(`🔒 Clôture manuelle — ${symbol} — ${result} — ${pct}%`);
   res.json({ success: true, pct, result });
 });
-
+ 
 // ─── DÉMARRAGE ────────────────────────────────────────────────────────────────
 async function start() {
   console.log('');
@@ -404,6 +395,7 @@ async function start() {
   await runScan();
   scheduleNext();
 }
-
+ 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 start().catch(console.error);
+ 
