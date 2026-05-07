@@ -1,6 +1,3 @@
-
-Copier
-
 'use strict';
 const express = require('express');
 const fetch   = require('node-fetch');
@@ -215,7 +212,7 @@ async function fetchCandles(symbol, outputsize = 300) {
 async function fetchCandles30(symbol) {
   try {
     const r = await fetch(
-      `https://api.twelvedata.com/time_series?symbol=${symbol}&interval=30min&outputsize=300&apikey=${TWELVE_KEY}`
+      `https://api.twelvedata.com/time_series?symbol=${symbol}&interval=15min&outputsize=300&apikey=${TWELVE_KEY}`
     );
     const d = await r.json();
     if (!d.values || d.status === 'error') return null;
@@ -239,12 +236,12 @@ async function checkTrades() {
  
       const candles = await fetchCandles30(trade.symbol);
       await sleep(2500);
-      if (!candles || !candles.length) { console.log(`⚠️  ${trade.symbol} — bougies 30min indisponibles`); continue; }
+      if (!candles || !candles.length) { console.log(`⚠️  ${trade.symbol} — bougies 15min indisponibles`); continue; }
  
       const postEntry = candles.filter(c => new Date(c.datetime).getTime() > entryTs);
  
       if (!postEntry.length) {
-        console.log(`⏸  ${trade.symbol} — en attente bougie 30min post-entrée`);
+        console.log(`⏸  ${trade.symbol} — en attente bougie 15min post-entrée`);
         continue;
       }
  
@@ -259,14 +256,14 @@ async function checkTrades() {
  
       if (closed) {
         const pct = ((closePrice - en) / en * 100).toFixed(2);
-        console.log(`${result==='WIN'?'✅':'❌'} ${trade.symbol} — ${result} — ${pct}% | 30min: ${closeDate}`);
+        console.log(`${result==='WIN'?'✅':'❌'} ${trade.symbol} — ${result} — ${pct}% | 15min: ${closeDate}`);
         history.unshift({ ...trade, result, closePrice: closePrice.toFixed(2), pct, closedAt: new Date(closeDate).toISOString() });
         if (history.length > 100) history = history.slice(0, 100);
         activeTrades = activeTrades.filter(t => t.symbol !== trade.symbol);
         changed = true;
       } else {
         const last = postEntry[postEntry.length - 1];
-        console.log(`⏸  ${trade.symbol} @ ${last.close} | TP +${((tp-last.close)/last.close*100).toFixed(2)}% | SL -${((last.close-sl)/last.close*100).toFixed(2)}% | ${postEntry.length} bougies 30min`);
+        console.log(`⏸  ${trade.symbol} @ ${last.close} | TP +${((tp-last.close)/last.close*100).toFixed(2)}% | SL -${((last.close-sl)/last.close*100).toFixed(2)}% | ${postEntry.length} bougies 15min`);
       }
  
     } catch (e) { console.error(`checkTrades ${trade.symbol}:`, e.message); }
