@@ -3,13 +3,12 @@ const express = require('express');
 const fetch   = require('node-fetch');
 const app     = express();
  
-const TWELVE_KEY = process.env.TWELVE_DATA_API_KEY;
-const JBIN_KEY   = process.env.JBIN_KEY;
-const JBIN_ID    = process.env.JBIN_ID;
-const PORT       = process.env.PORT || 3002;
+const TWELVE_KEY   = process.env.TWELVE_DATA_API_KEY;
+const FIREBASE_URL = process.env.FIREBASE_URL;
+const PORT         = process.env.PORT || 3002;
  
-if (!TWELVE_KEY || !JBIN_KEY || !JBIN_ID) {
-  console.error('❌ Variables manquantes : TWELVE_DATA_API_KEY, JBIN_KEY, JBIN_ID');
+if (!TWELVE_KEY || !FIREBASE_URL) {
+  console.error('❌ Variables manquantes : TWELVE_DATA_API_KEY, FIREBASE_URL');
   process.exit(1);
 }
  
@@ -40,30 +39,29 @@ app.use((req, res, next) => {
 });
 app.use(express.json());
  
-// ─── JSONBIN ─────────────────────────────────────────────────────────────────
+// ─── FIREBASE ────────────────────────────────────────────────────────────────
+async function loadCloud() {
+  try {
+    const r = await fetch(`${FIREBASE_URL}/stocks.json`);
+    const d = await r.json();
+    if (d) {
+      activeTrades   = d.activeTrades   || [];
+      history        = d.history        || [];
+      lastSignalTime = d.lastSignalTime || {};
+      console.log(`☁️  Cloud chargé — ${activeTrades.length} actifs, ${history.length} historique`);
+    }
+  } catch(e) { console.error('loadCloud:', e.message); }
+}
+ 
 async function syncCloud() {
   try {
-    await fetch(`https://api.jsonbin.io/v3/b/${JBIN_ID}`, {
+    await fetch(`${FIREBASE_URL}/stocks.json`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'X-Master-Key': JBIN_KEY },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ activeTrades, history, lastSignalTime })
     });
     console.log('☁️  Cloud sauvegardé');
   } catch(e) { console.error('syncCloud:', e.message); }
-}
-async function loadCloud() {
-  try {
-    const r = await fetch(`https://api.jsonbin.io/v3/b/${JBIN_ID}/latest`, {
-      headers: { 'X-Master-Key': JBIN_KEY }
-    });
-    const d = await r.json();
-    if (d.record) {
-      activeTrades   = d.record.activeTrades   || [];
-      history        = d.record.history        || [];
-      lastSignalTime = d.record.lastSignalTime || {};
-      console.log(`☁️  Cloud chargé — ${activeTrades.length} actifs, ${history.length} historique`);
-    }
-  } catch(e) { console.error('loadCloud:', e.message); }
 }
  
 // ─── MARCHÉ US ────────────────────────────────────────────────────────────────
@@ -208,7 +206,7 @@ async function fetchCandles(symbol, outputsize = 300) {
   } catch(e) { console.error(`fetchCandles ${symbol}:`, e.message); return null; }
 }
  
-// ─── FETCH BOUGIES 30MIN ─────────────────────────────────────────────────────
+// ─── FETCH BOUGIES 15MIN ─────────────────────────────────────────────────────
 async function fetchCandles30(symbol) {
   try {
     const r = await fetch(
@@ -220,7 +218,7 @@ async function fetchCandles30(symbol) {
   } catch (e) { console.error(`fetchCandles30 ${symbol}:`, e.message); return null; }
 }
  
-// ─── VÉRIFICATION TP/SL — BOUGIES 30MIN (filtre strict post-entrée) ──────────
+// ─── VÉRIFICATION TP/SL — BOUGIES 15MIN (filtre strict post-entrée) ──────────
 async function checkTrades() {
   if (!activeTrades.length) return;
   let changed = false;
@@ -331,17 +329,11 @@ async function scheduleNext() {
 // ─── HTTP ─────────────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({
-    status:       'running',
-    engine:       'NEXUS STOCKS',
-    version:      '1.0.0',
-    time:         new Date().toISOString(),
-    marketOpen:   isMarketOpen(),
-    activeTrades: activeTrades.length,
-    history:      history.length,
-    stocks:       STOCKS.map(s => s.symbol),
-    signal: {
-      buy: 'stochOverboughtCross + belowEMA50 + ema50_200Bear + bbUpperTouch + pivotBreakUp — WR 65%'
-    }
+    status: 'running', engine: 'NEXUS STOCKS', version: '1.0.0',
+    time: new Date().toISOString(), marketOpen: isMarketOpen(),
+    activeTrades: activeTrades.length, history: history.length,
+    stocks: STOCKS.map(s => s.symbol),
+    signal: { buy: 'stochOverboughtCross + belowEMA50 + ema50_200Bear + bbUpperTouch + pivotBreakUp — WR 65%' }
   });
 });
 app.get('/status', (req, res) => {
@@ -380,12 +372,11 @@ app.post('/close', async (req, res) => {
  
 // ─── DÉMARRAGE ────────────────────────────────────────────────────────────────
 async function start() {
-  console.log('');
   console.log('╔══════════════════════════════════════════════════════════╗');
-  console.log('║   NEXUS STOCKS — Serveur de signaux                      ║');
+  console.log('║   NEXUS STOCKS — Firebase                                ║');
   console.log('║   BUY: stochOverboughtCross + belowEMA50 + ema50_200Bear ║');
   console.log('║        + bbUpperTouch + pivotBreakUp — WR 65%            ║');
-  console.log('║   TP/SL check : HIGH/LOW de chaque bougie 4h ✅          ║');
+  console.log('║   TP/SL check : HIGH/LOW de chaque bougie 15min ✅       ║');
   console.log('╚══════════════════════════════════════════════════════════╝');
   await loadCloud();
   app.listen(PORT, () => console.log(`🌐 Port ${PORT}`));
